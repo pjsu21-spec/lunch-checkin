@@ -445,6 +445,7 @@ let state = {
   showAdminGuestAdd:false,
   adminFilter:'all',
   adminEditingEmpId:null,
+  proxyEditingEmpId:null,
   editingEmpId:null,
   showAddEmployee:false,
   showBulkAdd:false,
@@ -502,7 +503,9 @@ async function loadDateData(date){
 function resolveStatus(empId, dateStr){
   const dayData = state.checkinsCache[dateStr] || {};
   if(dayData[empId]){
-    return { status: dayData[empId].status, reason: dayData[empId].reason||'', source:'manual', updatedAt: dayData[empId].updatedAt };
+    const d = dayData[empId];
+    return { status: d.status, reason: d.reason||'', source:'manual', updatedAt: d.updatedAt,
+      checkedByEmpId: d.checkedByEmpId||null, checkedByName: d.checkedByName||null, setBy: d.setBy||null };
   }
   const pattern = state.recurringPatterns[empId];
   if(pattern){
@@ -537,7 +540,6 @@ function attachSearchFilter(inputId, listSelector, rowSelector){
   });
 }
 function attachDynamicListeners(){
-  attachSearchFilter('identity-search', '.identity-list', '.identity-row');
   attachSearchFilter('admin-search', '#admin-emp-list', '.emp-row');
   attachSearchFilter('roster-search', '#roster-list', '.roster-row');
 }
@@ -554,32 +556,37 @@ function renderLoading(){
 
 /* ===================== 이름 선택 화면 ===================== */
 function renderIdentity(){
-  const list = state.employees.filter(e=>e.active!==false).sort((a,b)=>a.name.localeCompare(b.name,'ko'));
-  const rows = list.map(e => `
-    <button class="identity-row" data-name="${esc(e.name.toLowerCase())}" onclick="selectIdentity('${e.id}')">
-      <span class="avatar-circle">${esc(e.name.slice(0,1))}</span>
-      <span class="identity-info">
-        <span class="identity-name">${esc(e.name)}</span>
-        ${e.dept?`<span class="identity-dept">${esc(e.dept)}</span>`:''}
-      </span>
-    </button>`).join('');
-
   return `
   <div class="identity-screen">
     <div class="identity-header">
       <div class="brand-mark">${ICONS.brand}</div>
       <h1>다름달음 점심체크</h1>
-      <p class="sub">이름을 선택해주세요</p>
+      <p class="sub">이름을 검색해주세요</p>
     </div>
-    <input id="identity-search" type="text" placeholder="이름 검색" />
-    <div class="identity-list">
-      ${rows || '<p class="empty-hint">아직 등록된 직원이 없어요.<br>관리자에게 등록을 요청해주세요.</p>'}
+    <input id="identity-search" type="text" placeholder="이름 검색" oninput="filterIdentityResults(this.value)" />
+    <div class="identity-list" id="identity-results">
+      <p class="empty-hint">이름을 입력하면 본인을 찾을 수 있어요</p>
     </div>
-    <p class="empty-hint" style="padding:10px 8px;">이름이 목록에 없나요? 관리자에게 등록을 요청해주세요.</p>
+    <p class="empty-hint" style="padding:10px 8px;">이름이 없나요? 관리자에게 등록을 요청해주세요.</p>
     <div class="identity-footer">
       <button class="link-btn" onclick="goAdminPin()">관리자 로그인</button>
     </div>
   </div>`;
+}
+function filterIdentityResults(val){
+  const el = document.getElementById('identity-results');
+  if(!el) return;
+  const q = (val||'').trim().toLowerCase();
+  if(!q){ el.innerHTML = '<p class="empty-hint">이름을 입력하면 본인을 찾을 수 있어요</p>'; return; }
+  const matches = state.employees.filter(e=>e.active!==false && e.name.toLowerCase().includes(q)).slice(0,8);
+  el.innerHTML = matches.length ? matches.map(e => `
+    <button class="identity-row" onclick="selectIdentity('${e.id}')">
+      <span class="avatar-circle">${esc(e.name.slice(0,1))}</span>
+      <span class="identity-info">
+        <span class="identity-name">${esc(e.name)}</span>
+        ${e.dept?`<span class="identity-dept">${esc(e.dept)}</span>`:''}
+      </span>
+    </button>`).join('') : '<p class="empty-hint">일치하는 이름이 없어요</p>';
 }
 async function selectIdentity(empId){
   const emp = state.employees.find(e=>e.id===empId);
@@ -756,7 +763,54 @@ function renderToday(){
       <button class="quick-link-card" onclick="switchEmployeeTab('recurring')">${icon('gear')}<span>정기 식사 패턴 설정하기</span><span class="chev">›</span></button>
       <button class="quick-link-card" onclick="switchEmployeeTab('guests')">${icon('users')}<span>외부/일용직 인원 추가하기</span><span class="chev">›</span></button>
     </div>
+    <div class="card">
+      <h2 class="section-title">${icon('users')} 동료 대신 체크하기</h2>
+      <p class="desc-text">자리를 비운 동료를 대신 체크할 수 있어요. 누가 체크했는지는 관리자가 확인할 수 있어요.</p>
+      <input id="proxy-search" type="text" placeholder="동료 이름 검색" oninput="filterProxyResults(this.value)" />
+      <div id="proxy-results"></div>
+      ${state.proxyEditingEmpId ? renderProxyEditor(date) : ''}
+    </div>
   `;
+}
+function filterProxyResults(val){
+  const el = document.getElementById('proxy-results');
+  if(!el) return;
+  const q = (val||'').trim().toLowerCase();
+  if(!q){ el.innerHTML=''; return; }
+  const myId = state.myProfile.employeeId;
+  const matches = state.employees.filter(e=>e.active!==false && e.id!==myId && e.name.toLowerCase().includes(q)).slice(0,6);
+  el.innerHTML = matches.length ? matches.map(e=>`
+    <button class="quick-result-row" onclick="selectProxyEmp('${e.id}')">
+      <span class="avatar-circle sm">${esc(e.name.slice(0,1))}</span>
+      <span>${esc(e.name)} ${e.dept?`<span class="emp-row-dept">${esc(e.dept)}</span>`:''}</span>
+    </button>`).join('') : '<div class="empty-hint" style="padding:14px 8px;">일치하는 동료가 없어요</div>';
+}
+function selectProxyEmp(empId){
+  const search = document.getElementById('proxy-search');
+  const results = document.getElementById('proxy-results');
+  if(search) search.value='';
+  if(results) results.innerHTML='';
+  state.proxyEditingEmpId = empId;
+  render();
+}
+function closeProxyEditor(){ state.proxyEditingEmpId=null; render(); }
+function renderProxyEditor(date){
+  const emp = state.employees.find(e=>e.id===state.proxyEditingEmpId);
+  if(!emp) return '';
+  const r = resolveStatus(emp.id, date);
+  const reasonChips = REASONS.map(rs=>{
+    const sel = r.reason===rs || (rs==='기타' && r.reason.startsWith('기타'));
+    return `<button class="chip sm ${sel?'selected':''}" onclick="proxyCheckStatus('${date}','${emp.id}','skip','${rs}')">${rs}</button>`;
+  }).join('');
+  return `
+    <div class="card editor-card" style="margin-top:12px;box-shadow:none;padding:14px;">
+      <div class="editor-header"><span><b>${esc(emp.name)}</b>님 대신 체크</span> <button class="icon-btn" onclick="closeProxyEditor()">${icon('x')}</button></div>
+      <div class="status-buttons">
+        <button class="status-btn eat ${r.status==='eat'?'selected':''}" onclick="proxyCheckStatus('${date}','${emp.id}','eat')">${icon('check')}<span>식사</span></button>
+        <button class="status-btn skip ${r.status==='skip'?'selected':''}" onclick="proxyCheckStatus('${date}','${emp.id}','skip','')">${icon('x')}<span>미식사</span></button>
+      </div>
+      ${r.status==='skip' ? `<div class="chip-grid">${reasonChips}</div>` : ''}
+    </div>`;
 }
 async function saveCustomReason(date){
   const val = document.getElementById('custom-reason-input').value.trim();
@@ -768,7 +822,7 @@ async function setMyStatus(dateStr, status, reason){
   if(!state.myProfile) return;
   const prevDay = {...(state.checkinsCache[dateStr]||{})};
   const day = {...(state.checkinsCache[dateStr]||{})};
-  day[state.myProfile.employeeId] = {status, reason, updatedAt: Date.now()};
+  day[state.myProfile.employeeId] = {status, reason, updatedAt: Date.now(), checkedByEmpId: state.myProfile.employeeId, checkedByName: state.myProfile.name};
   state.checkinsCache[dateStr] = day;
   render();
   const ok = await Store.set('checkins:'+dateStr, day);
@@ -780,6 +834,16 @@ async function setMyStatus(dateStr, status, reason){
     toast('저장되었습니다');
   }
 }
+async function proxyCheckStatus(dateStr, targetEmpId, status, reason){
+  if(reason===undefined) reason='';
+  if(!state.myProfile) return;
+  const day = {...(state.checkinsCache[dateStr]||{})};
+  day[targetEmpId] = {status, reason, updatedAt: Date.now(), checkedByEmpId: state.myProfile.employeeId, checkedByName: state.myProfile.name};
+  state.checkinsCache[dateStr] = day;
+  render();
+  const ok = await Store.set('checkins:'+dateStr, day);
+  toast(ok?'저장되었습니다':'저장에 실패했어요', !ok);
+}
 async function revertToPattern(dateStr){
   const day = {...(state.checkinsCache[dateStr]||{})};
   delete day[state.myProfile.employeeId];
@@ -789,11 +853,13 @@ async function revertToPattern(dateStr){
 }
 async function selectDate(dateStr){
   state.selectedDate = dateStr;
+  state.proxyEditingEmpId = null;
   await loadDateData(dateStr);
   render();
 }
 async function shiftWeek(n){
   state.selectedDate = addDays(state.selectedDate, 7*n);
+  state.proxyEditingEmpId = null;
   await loadDateData(state.selectedDate);
   render();
 }
@@ -1122,6 +1188,8 @@ function renderAdminStatusEditor(date){
     const sel = r.reason===rs || (rs==='기타' && r.reason.startsWith('기타'));
     return `<button class="chip sm ${sel?'selected':''}" onclick="adminSetStatus('${date}','${emp.id}','skip','${rs}')">${rs}</button>`;
   }).join('');
+  const auditNote = r.setBy==='admin' ? '<p class="muted-text">관리자가 처리했어요.</p>'
+    : (r.checkedByEmpId && r.checkedByEmpId!==emp.id ? `<p class="muted-text">${esc(r.checkedByName||'동료')}님이 대신 체크했어요.</p>` : '');
   return `
     <div class="card editor-card">
       <div class="editor-header"><span><b>${esc(emp.name)}</b>님의 ${date} 상태 변경</span> <button class="icon-btn" onclick="closeAdminStatusEditor()">${icon('x')}</button></div>
@@ -1130,6 +1198,7 @@ function renderAdminStatusEditor(date){
         <button class="status-btn skip ${r.status==='skip'?'selected':''}" onclick="adminSetStatus('${date}','${emp.id}','skip','')">${icon('x')}<span>미식사</span></button>
       </div>
       ${r.status==='skip' ? `<div class="chip-grid">${reasonChips}</div>` : ''}
+      ${auditNote}
       ${r.source==='manual' ? `<button class="link-btn small" onclick="adminRevertToPattern('${date}','${emp.id}')">정기 설정으로 되돌리기</button>` : ''}
     </div>`;
 }
@@ -1228,7 +1297,10 @@ function renderAdminDashboard(){
   const withStatus = activeEmps.map(e=>({emp:e, r:resolveStatus(e.id,date)}));
   const filtered = withStatus.filter(x=> filter==='all' || x.r.status===filter).sort((a,b)=>a.emp.name.localeCompare(b.emp.name,'ko'));
 
-  const rows = filtered.map(({emp,r})=>`
+  const rows = filtered.map(({emp,r})=>{
+    const auditTag = r.setBy==='admin' ? '<span class="tag-auto">관리자 처리</span>'
+      : (r.checkedByEmpId && r.checkedByEmpId!==emp.id ? `<span class="tag-auto">${esc(r.checkedByName||'동료')} 체크</span>` : '');
+    return `
     <div class="emp-row" data-name="${esc(emp.name.toLowerCase())}">
       <span class="avatar-circle sm">${esc(emp.name.slice(0,1))}</span>
       <div class="emp-row-info">
@@ -1237,10 +1309,12 @@ function renderAdminDashboard(){
           <span class="badge badge-${r.status}">${r.status==='eat'?'식사':(r.status==='skip'?'미식사':'미체크')}</span>
           ${r.reason?`<span class="emp-row-reason">${esc(r.reason)}</span>`:''}
           ${r.source==='recurring'?'<span class="tag-auto">자동</span>':''}
+          ${auditTag}
         </div>
       </div>
       <button class="icon-btn" onclick="openAdminStatusEditor('${emp.id}')">${icon('pencil')}</button>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 
   const guests = state.guestsCache[date] || [];
   const editorHtml = state.adminEditingEmpId ? renderAdminStatusEditor(date) : '';
