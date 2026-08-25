@@ -328,7 +328,7 @@ function withTimeout(promise, ms=10000){
 /* =========================================================================
    다름달음 점심체크 — 데이터 구조 (Supabase 테이블 lunch_app_data, key-value 저장)
    - employees            (공유): [{id,name,dept,active,createdAt}]
-   - settings             (공유): {cutoffTime, adminPin, companyName, vendorName, mealUnitPrice}
+   - settings             (공유): {cutoffTime, adminPin, companyName, vendorName, mealUnitPrice, dinnerUnitPrice}
    - recurringPatterns    (공유): { [employeeId]: {mon..sun: boolean} }
    - checkins:YYYY-MM-DD  (공유): { [employeeId]: {status:'eat'|'skip', reason, updatedAt} }
    - guests:YYYY-MM-DD    (공유): [{id,type,count,note,addedBy,addedByEmpId,addedAt}]
@@ -352,6 +352,7 @@ const ICONS = {
   copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>',
   backspace: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6h11v12H9l-6-6 6-6Z"/><path d="M13 10l4 4M17 10l-4 4"/></svg>',
   clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>',
+  moon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79Z"/></svg>',
 };
 function icon(name){ return '<span class="icon">' + (ICONS[name]||'') + '</span>'; }
 
@@ -445,7 +446,7 @@ const Store = {
 let state = {
   view:'loading',
   employees:[],
-  settings:{cutoffTime:'10:00', adminPin:'0000', companyName:'다름달음', vendorName:'', mealUnitPrice:''},
+  settings:{cutoffTime:'10:00', adminPin:'0000', companyName:'다름달음', vendorName:'', mealUnitPrice:'', dinnerUnitPrice:''},
   recurringPatterns:{},
   myProfile:null,
   employeeTab:'today',
@@ -454,6 +455,7 @@ let state = {
   selectedDate: todayStr(),
   adminDate: todayStr(),
   checkinsCache:{},
+  dinnerCache:{},
   guestsCache:{},
   pinInput:'',
   guestType:'외부인',
@@ -515,6 +517,16 @@ async function loadDateData(date){
     const g = await Store.get('guests:'+date);
     state.guestsCache[date] = g || [];
   }
+  if(!(date in state.dinnerCache)){
+    const dn = await Store.get('dinnerRequests:'+date);
+    state.dinnerCache[date] = dn || {};
+  }
+}
+function resolveDinnerStatus(empId, dateStr){
+  const dayData = state.dinnerCache[dateStr] || {};
+  const d = dayData[empId];
+  if(!d || !d.requested) return { requested:false, checkedByEmpId:null, checkedByName:null };
+  return { requested:true, updatedAt:d.updatedAt, checkedByEmpId:d.checkedByEmpId||null, checkedByName:d.checkedByName||null };
 }
 function resolveStatus(empId, dateStr){
   const dayData = state.checkinsCache[dateStr] || {};
@@ -671,6 +683,7 @@ async function tryAdminPin(){
 function renderEmployeeShell(){
   let content;
   if(state.employeeTab==='today') content = renderToday();
+  else if(state.employeeTab==='dinner') content = renderDinner();
   else if(state.employeeTab==='recurring') content = renderRecurring();
   else if(state.employeeTab==='guests') content = renderGuestsTab();
   else content = renderMore();
@@ -684,11 +697,13 @@ function renderEmployeeShell(){
     </header>
     <main class="content">${content}</main>
     <nav class="bottom-nav">
-      <button class="nav-tab ${state.employeeTab==='today'?'active':''}" onclick="switchEmployeeTab('today')">${icon('check')}<span>오늘</span></button>
+      <button class="nav-tab ${state.employeeTab==='today'?'active':''}" onclick="switchEmployeeTab('today')">${icon('check')}<span>중식</span></button>
+      <button class="nav-tab ${state.employeeTab==='dinner'?'active':''}" onclick="switchEmployeeTab('dinner')">${icon('moon')}<span>석식</span></button>
       <button class="nav-tab ${state.employeeTab==='recurring'?'active':''}" onclick="switchEmployeeTab('recurring')">${icon('gear')}<span>정기설정</span></button>
       <button class="nav-tab ${state.employeeTab==='guests'?'active':''}" onclick="switchEmployeeTab('guests')">${icon('users')}<span>외부인원</span></button>
       <button class="nav-tab ${state.employeeTab==='more'?'active':''}" onclick="switchEmployeeTab('more')"><span class="avatar-tab-badge">${initial}</span><span>더보기</span></button>
     </nav>
+
   </div>`;
 }
 function switchEmployeeTab(tab){ state.employeeTab=tab; render(); }
@@ -828,6 +843,49 @@ function renderProxyEditor(date){
       ${r.status==='skip' ? `<div class="chip-grid">${reasonChips}</div>` : ''}
     </div>`;
 }
+function renderDinner(){
+  const date = state.selectedDate;
+  const isToday = date === todayStr();
+  const empId = state.myProfile.employeeId;
+  const dr = resolveDinnerStatus(empId, date);
+  const week = getWeekDates(date);
+
+  const pills = week.map(d=>{
+    const drr = resolveDinnerStatus(empId, d);
+    const dotClass = drr.requested ? 'dot-eat' : 'dot-unchecked';
+    const dObj = new Date(d+'T00:00:00');
+    const label = DOW_LABELS[DOW_KEYS[dObj.getDay()]];
+    const sel = d===date ? 'selected' : '';
+    const todayCls = d===todayStr() ? 'is-today' : '';
+    return `<button class="day-pill ${sel} ${todayCls}" onclick="selectDate('${d}')">
+      <span class="day-pill-dow">${label}</span>
+      <span class="day-pill-num">${dObj.getDate()}</span>
+      <span class="dot ${dotClass}"></span>
+    </button>`;
+  }).join('');
+
+  const dObj = new Date(date+'T00:00:00');
+  const dowFull = ['일요일','월요일','화요일','수요일','목요일','금요일','토요일'][dObj.getDay()];
+  const dateLabel = `${dObj.getMonth()+1}월 ${dObj.getDate()}일 ${dowFull}` + (isToday?' · 오늘':'');
+
+  return `
+    <div class="date-card">
+      <div class="date-nav">
+        <button class="icon-btn" onclick="shiftWeek(-1)">‹</button>
+        <span class="date-label">${dateLabel}</span>
+        <button class="icon-btn" onclick="shiftWeek(1)">›</button>
+      </div>
+      <div class="week-strip">${pills}</div>
+    </div>
+    <div class="card">
+      <p class="desc-text">${icon('moon')} 석식은 <b>야근하시는 분만</b> 신청해주세요. 신청 안 하면 자동으로 카운트되지 않아요.</p>
+      <div class="status-buttons">
+        <button class="status-btn eat ${dr.requested?'selected':''}" onclick="toggleDinnerRequest('${date}')">${icon('check')}<span>${dr.requested?'석식 신청됨 (취소하려면 다시 누르세요)':'석식 신청하기'}</span></button>
+      </div>
+      ${dr.requested && dr.checkedByEmpId && dr.checkedByEmpId!==empId ? `<p class="muted-text">${esc(dr.checkedByName||'다른 사람')}이 신청했어요.</p>` : ''}
+    </div>
+  `;
+}
 async function saveCustomReason(date){
   const val = document.getElementById('custom-reason-input').value.trim();
   const reason = val ? `기타: ${val}` : '기타';
@@ -858,6 +916,33 @@ async function proxyCheckStatus(dateStr, targetEmpId, status, reason){
   state.checkinsCache[dateStr] = day;
   render();
   const ok = await Store.set('checkins:'+dateStr, day);
+  toast(ok?'저장되었습니다':'저장에 실패했어요', !ok);
+}
+async function toggleDinnerRequest(dateStr){
+  if(!state.myProfile) return;
+  const empId = state.myProfile.employeeId;
+  const day = {...(state.dinnerCache[dateStr]||{})};
+  const current = !!(day[empId] && day[empId].requested);
+  if(current){
+    delete day[empId];
+  }else{
+    day[empId] = {requested:true, updatedAt: Date.now(), checkedByEmpId: empId, checkedByName: state.myProfile.name};
+  }
+  state.dinnerCache[dateStr] = day;
+  render();
+  const ok = await Store.set('dinnerRequests:'+dateStr, day);
+  toast(ok?'저장되었습니다':'저장에 실패했어요', !ok);
+}
+async function adminToggleDinner(dateStr, empId, on){
+  const day = {...(state.dinnerCache[dateStr]||{})};
+  if(on){
+    day[empId] = {requested:true, updatedAt: Date.now(), checkedByEmpId:'admin', checkedByName:'관리자'};
+  }else{
+    delete day[empId];
+  }
+  state.dinnerCache[dateStr] = day;
+  render();
+  const ok = await Store.set('dinnerRequests:'+dateStr, day);
   toast(ok?'저장되었습니다':'저장에 실패했어요', !ok);
 }
 async function revertToPattern(dateStr){
@@ -1100,8 +1185,17 @@ function computeDailySummary(dateStr){
   for(const g of guests){ guestBreakdown[g.type]=(guestBreakdown[g.type]||0)+g.count; guestTotal+=g.count; }
   return {eatCount, skipList, uncheckedList, guestTotal, guestBreakdown};
 }
+function computeDinnerSummary(dateStr){
+  const day = state.dinnerCache[dateStr] || {};
+  const list = Object.keys(day).filter(id=>day[id] && day[id].requested).map(id=>{
+    const emp = state.employees.find(e=>e.id===id);
+    return { empId:id, name: emp?emp.name:'(삭제된 직원)', dept: emp?(emp.dept||''):'', checkedByEmpId: day[id].checkedByEmpId||null, checkedByName: day[id].checkedByName||null };
+  }).sort((a,b)=>a.name.localeCompare(b.name,'ko'));
+  return { count: list.length, list };
+}
 function generateVendorText(dateStr){
   const s = computeDailySummary(dateStr);
+  const dinner = computeDinnerSummary(dateStr);
   const d = new Date(dateStr+'T00:00:00');
   const dow = ['일','월','화','수','목','금','토'][d.getDay()];
   const dateLabel = `${d.getMonth()+1}월 ${d.getDate()}일(${dow})`;
@@ -1113,6 +1207,7 @@ function generateVendorText(dateStr){
   lines.push(dateLabel);
   lines.push(`총 ${total}명`);
   if(s.uncheckedList.length) lines.push(`\n※ 미체크 ${s.uncheckedList.length}명은 별도 확인이 필요해요`);
+  if(dinner.count>0) lines.push(`\n[석식 신청]\n${dinner.count}명`);
   return lines.join('\n');
 }
 async function loadSettlementMonth(monthStr){
@@ -1124,9 +1219,10 @@ async function loadSettlementMonth(monthStr){
   await Promise.all(dates.map(d => loadDateData(d)));
   state.settlementRows = dates.map(d => {
     const s = computeDailySummary(d);
+    const dinner = computeDinnerSummary(d);
     const guestExt = s.guestBreakdown['외부인'] || 0;
     const guestDay = s.guestBreakdown['일용직'] || 0;
-    return { date: d, eat: s.eatCount, guestExt, guestDay, guestTotal: s.guestTotal, total: s.eatCount + s.guestTotal, unchecked: s.uncheckedList.length };
+    return { date: d, eat: s.eatCount, guestExt, guestDay, guestTotal: s.guestTotal, total: s.eatCount + s.guestTotal, unchecked: s.uncheckedList.length, dinner: dinner.count };
   });
   state.settlementLoading = false;
   render();
@@ -1138,16 +1234,19 @@ function changeSettlementMonth(val){
 }
 function renderAdminSettlement(){
   const unitPrice = parseInt(state.settings.mealUnitPrice, 10) || 0;
+  const dinnerPrice = parseInt(state.settings.dinnerUnitPrice, 10) || 0;
   const rows = state.settlementRows || [];
   const sumEat = rows.reduce((a,r)=>a+r.eat,0);
   const sumExt = rows.reduce((a,r)=>a+r.guestExt,0);
   const sumDay = rows.reduce((a,r)=>a+r.guestDay,0);
   const sumTotal = rows.reduce((a,r)=>a+r.total,0);
+  const sumDinner = rows.reduce((a,r)=>a+r.dinner,0);
   const sumCost = sumTotal * unitPrice;
+  const sumDinnerCost = sumDinner * dinnerPrice;
   const dowArr = ['일','월','화','수','목','금','토'];
   const rowsHtml = rows.map(r=>{
     const d = new Date(r.date+'T00:00:00');
-    return `<tr><td>${d.getDate()}일(${dowArr[d.getDay()]})</td><td>${r.eat}</td><td>${r.guestExt}</td><td>${r.guestDay}</td><td><b>${r.total}</b></td>${unitPrice?`<td>${(r.total*unitPrice).toLocaleString()}</td>`:''}</tr>`;
+    return `<tr><td>${d.getDate()}일(${dowArr[d.getDay()]})</td><td>${r.eat}</td><td>${r.guestExt}</td><td>${r.guestDay}</td><td><b>${r.total}</b></td>${unitPrice?`<td>${(r.total*unitPrice).toLocaleString()}</td>`:''}<td>${r.dinner}</td>${dinnerPrice?`<td>${(r.dinner*dinnerPrice).toLocaleString()}</td>`:''}</tr>`;
   }).join('');
   return `
     <div class="card">
@@ -1157,12 +1256,12 @@ function renderAdminSettlement(){
       ${state.settlementLoading ? '<p class="muted-text">불러오는 중...</p>' : (rows.length ? `
         <div class="table-scroll">
           <table class="settlement-table">
-            <thead><tr><th>날짜</th><th>직원</th><th>외부인</th><th>일용직</th><th>합계</th>${unitPrice?'<th>금액(원)</th>':''}</tr></thead>
+            <thead><tr><th>날짜</th><th>중식 직원</th><th>외부인</th><th>일용직</th><th>중식 합계</th>${unitPrice?'<th>중식 금액</th>':''}<th>석식</th>${dinnerPrice?'<th>석식 금액</th>':''}</tr></thead>
             <tbody>${rowsHtml}</tbody>
-            <tfoot><tr><td>합계</td><td>${sumEat}</td><td>${sumExt}</td><td>${sumDay}</td><td><b>${sumTotal}</b></td>${unitPrice?`<td><b>${sumCost.toLocaleString()}</b></td>`:''}</tr></tfoot>
+            <tfoot><tr><td>합계</td><td>${sumEat}</td><td>${sumExt}</td><td>${sumDay}</td><td><b>${sumTotal}</b></td>${unitPrice?`<td><b>${sumCost.toLocaleString()}</b></td>`:''}<td><b>${sumDinner}</b></td>${dinnerPrice?`<td><b>${sumDinnerCost.toLocaleString()}</b></td>`:''}</tr></tfoot>
           </table>
         </div>
-        ${!unitPrice ? '<p class="muted-text">설정 탭에서 식대 단가를 입력하면 예상 금액도 함께 보여드려요.</p>' : ''}
+        ${(!unitPrice || !dinnerPrice) ? '<p class="muted-text">설정 탭에서 중식/석식 단가를 입력하면 예상 금액도 함께 보여드려요.</p>' : ''}
         <button class="btn btn-primary full" onclick="downloadSettlementCSV()" style="margin-top:14px;">${icon('download')} 월별 데이터 다운로드 (CSV)</button>
       ` : '<div class="empty-hint">해당 월에 데이터가 아직 없어요</div>')}
     </div>`;
@@ -1171,20 +1270,27 @@ function downloadSettlementCSV(){
   const rows = state.settlementRows || [];
   if(!rows.length){ toast('다운로드할 데이터가 없어요', true); return; }
   const unitPrice = parseInt(state.settings.mealUnitPrice, 10) || 0;
+  const dinnerPrice = parseInt(state.settings.dinnerUnitPrice, 10) || 0;
   const dowArr = ['일','월','화','수','목','금','토'];
-  const header = ['날짜','요일','직원 식사','외부인','일용직','합계'];
-  if(unitPrice) header.push('금액(원)');
+  const header = ['날짜','요일','중식 직원','외부인','일용직','중식 합계'];
+  if(unitPrice) header.push('중식 금액(원)');
+  header.push('석식 신청');
+  if(dinnerPrice) header.push('석식 금액(원)');
   const lines = [header.join(',')];
-  let sumEat=0, sumExt=0, sumDay=0, sumTotal=0;
+  let sumEat=0, sumExt=0, sumDay=0, sumTotal=0, sumDinner=0;
   for(const r of rows){
     const d = new Date(r.date+'T00:00:00');
-    sumEat+=r.eat; sumExt+=r.guestExt; sumDay+=r.guestDay; sumTotal+=r.total;
+    sumEat+=r.eat; sumExt+=r.guestExt; sumDay+=r.guestDay; sumTotal+=r.total; sumDinner+=r.dinner;
     const cols = [r.date, dowArr[d.getDay()], r.eat, r.guestExt, r.guestDay, r.total];
     if(unitPrice) cols.push(r.total*unitPrice);
+    cols.push(r.dinner);
+    if(dinnerPrice) cols.push(r.dinner*dinnerPrice);
     lines.push(cols.join(','));
   }
   const totalCols = ['합계','', sumEat, sumExt, sumDay, sumTotal];
   if(unitPrice) totalCols.push(sumTotal*unitPrice);
+  totalCols.push(sumDinner);
+  if(dinnerPrice) totalCols.push(sumDinner*dinnerPrice);
   lines.push(totalCols.join(','));
   const csv = '\uFEFF' + lines.join('\r\n');
   const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
@@ -1265,6 +1371,27 @@ function selectAdminQuickEmp(empId){
   if(results) results.innerHTML='';
   openAdminStatusEditor(empId);
 }
+function filterAdminDinnerQuickResults(val, date){
+  const el = document.getElementById('admin-dinner-quick-results');
+  if(!el) return;
+  const q = (val||'').trim().toLowerCase();
+  if(!q){ el.innerHTML=''; return; }
+  const day = state.dinnerCache[date] || {};
+  const existing = new Set(Object.keys(day).filter(id=>day[id] && day[id].requested));
+  const matches = state.employees.filter(e=>e.active!==false && !existing.has(e.id) && e.name.toLowerCase().includes(q)).slice(0,6);
+  el.innerHTML = matches.length ? matches.map(e=>`
+    <button class="quick-result-row" onclick="selectAdminDinnerAdd('${date}','${e.id}')">
+      <span class="avatar-circle sm">${esc(e.name.slice(0,1))}</span>
+      <span>${esc(e.name)} ${e.dept?`<span class="emp-row-dept">${esc(e.dept)}</span>`:''}</span>
+    </button>`).join('') : '<div class="empty-hint" style="padding:14px 8px;">일치하는 직원이 없어요</div>';
+}
+function selectAdminDinnerAdd(date, empId){
+  const search = document.getElementById('admin-dinner-quick-search');
+  const results = document.getElementById('admin-dinner-quick-results');
+  if(search) search.value='';
+  if(results) results.innerHTML='';
+  adminToggleDinner(date, empId, true);
+}
 function toggleVendorText(){ state.showVendorText=!state.showVendorText; render(); }
 async function copyToClipboard(text){
   try{
@@ -1333,6 +1460,20 @@ function renderAdminDashboard(){
   }).join('');
 
   const guests = state.guestsCache[date] || [];
+  const dinnerSummary = computeDinnerSummary(date);
+  const dinnerRows = dinnerSummary.list.map(d=>{
+    const auditTag = d.checkedByEmpId==='admin' ? '<span class="tag-auto">관리자 처리</span>'
+      : (d.checkedByEmpId && d.checkedByEmpId!==d.empId ? `<span class="tag-auto">${esc(d.checkedByName||'동료')} 체크</span>` : '');
+    return `
+    <div class="emp-row">
+      <span class="avatar-circle sm">${esc(d.name.slice(0,1))}</span>
+      <div class="emp-row-info">
+        <div class="emp-row-name">${esc(d.name)} ${d.dept?`<span class="emp-row-dept">${esc(d.dept)}</span>`:''}</div>
+        <div class="emp-row-status">${auditTag}</div>
+      </div>
+      <button class="icon-btn" onclick="adminToggleDinner('${date}','${d.empId}',false)">${icon('x')}</button>
+    </div>`;
+  }).join('');
   const editorHtml = state.adminEditingEmpId ? renderAdminStatusEditor(date) : '';
   const vendorTextHtml = state.showVendorText ? `
     <div class="card">
@@ -1387,6 +1528,16 @@ function renderAdminDashboard(){
       ${renderGuestListSection(date, guests)}
       <button class="btn btn-outline full small" style="margin-top:12px;" onclick="toggleAdminGuestAdd()">${icon('plus')} 인원 추가</button>
       ${state.showAdminGuestAdd ? renderGuestAddForm(date) : ''}
+    </div>
+    <div class="card">
+      <h2 class="section-title">${icon('moon')} 석식 신청 현황</h2>
+      <p class="muted-text">야근하는 직원만 신청해요. 미신청 인원은 집계하지 않아요.</p>
+      <input id="admin-dinner-quick-search" type="text" placeholder="이름 검색해서 추가" oninput="filterAdminDinnerQuickResults(this.value,'${date}')" />
+      <div id="admin-dinner-quick-results"></div>
+      <div class="stat-grid" style="margin-top:10px;margin-bottom:10px;">
+        <div class="stat-card highlight"><div class="stat-num">${dinnerSummary.count}</div><div class="stat-label">석식 신청</div></div>
+      </div>
+      <div class="emp-list">${dinnerRows || '<p class="empty-hint">아직 신청자가 없어요.</p>'}</div>
     </div>
   `;
 }
@@ -1518,8 +1669,10 @@ function renderAdminSettings(){
       <input id="setting-company" type="text" value="${esc(s.companyName||'')}" />
       <label>업체명 (선택)</label>
       <input id="setting-vendor" type="text" value="${esc(s.vendorName||'')}" placeholder="공유 텍스트에 표시할 업체명" />
-      <label>1인당 식대 단가 (원, 선택)</label>
+      <label>1인당 중식 단가 (원, 선택)</label>
       <input id="setting-unit-price" type="number" inputmode="numeric" value="${esc(s.mealUnitPrice||'')}" placeholder="예: 7000" />
+      <label>1인당 석식 단가 (원, 선택)</label>
+      <input id="setting-dinner-price" type="number" inputmode="numeric" value="${esc(s.dinnerUnitPrice||'')}" placeholder="예: 8000" />
       <button class="btn btn-primary full" onclick="saveGeneralSettings()">저장</button>
     </div>
     <div class="card">
@@ -1543,7 +1696,8 @@ async function saveGeneralSettings(){
   const companyName = document.getElementById('setting-company').value.trim();
   const vendorName = document.getElementById('setting-vendor').value.trim();
   const mealUnitPrice = document.getElementById('setting-unit-price').value.trim();
-  state.settings = {...state.settings, cutoffTime, companyName, vendorName, mealUnitPrice};
+  const dinnerUnitPrice = document.getElementById('setting-dinner-price').value.trim();
+  state.settings = {...state.settings, cutoffTime, companyName, vendorName, mealUnitPrice, dinnerUnitPrice};
   render();
   await Store.set('settings', state.settings);
   toast('설정이 저장되었어요');
