@@ -9,7 +9,7 @@
 <meta http-equiv="Expires" content="0" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="mobile-web-app-capable" content="yes" />
-<title>다름달음 점심체크</title>
+<title>다름달음 식사취합</title>
 <style>
 /* ===================== 리셋 & 토큰 ===================== */
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
@@ -326,7 +326,7 @@ function withTimeout(promise, ms=10000){
 }
 
 /* =========================================================================
-   다름달음 점심체크 — 데이터 구조 (Supabase 테이블 lunch_app_data, key-value 저장)
+   다름달음 식사취합 — 데이터 구조 (Supabase 테이블 lunch_app_data, key-value 저장)
    - employees            (공유): [{id,name,dept,active,createdAt}]
    - settings             (공유): {cutoffTime, adminPin, companyName, vendorName, mealUnitPrice, dinnerUnitPrice}
    - recurringPatterns    (공유): { [employeeId]: {mon..sun: boolean} }
@@ -456,14 +456,19 @@ let state = {
   adminDate: todayStr(),
   checkinsCache:{},
   dinnerCache:{},
+  dinnerGuestsCache:{},
   guestsCache:{},
   pinInput:'',
   guestType:'외부인',
+  dinnerGuestType:'외부인',
+  dinnerGuestCount:1,
   guestCount:1,
   showAdminGuestAdd:false,
+  showAdminDinnerGuestAdd:false,
   adminFilter:'all',
   adminEditingEmpId:null,
   proxyEditingEmpId:null,
+  dinnerProxyEditingEmpId:null,
   editingEmpId:null,
   showAddEmployee:false,
   showBulkAdd:false,
@@ -520,6 +525,10 @@ async function loadDateData(date){
   if(!(date in state.dinnerCache)){
     const dn = await Store.get('dinnerRequests:'+date);
     state.dinnerCache[date] = dn || {};
+  }
+  if(!(date in state.dinnerGuestsCache)){
+    const dg = await Store.get('dinnerGuests:'+date);
+    state.dinnerGuestsCache[date] = dg || [];
   }
 }
 function resolveDinnerStatus(empId, dateStr){
@@ -588,7 +597,7 @@ function renderIdentity(){
   <div class="identity-screen">
     <div class="identity-header">
       <div class="brand-mark">${ICONS.brand}</div>
-      <h1>다름달음 점심체크</h1>
+      <h1>다름달음 식사취합</h1>
       <p class="sub">이름을 검색해주세요</p>
     </div>
     <input id="identity-search" type="text" placeholder="이름 검색" oninput="filterIdentityResults(this.value)" />
@@ -692,7 +701,7 @@ function renderEmployeeShell(){
   return `
   <div class="shell">
     <header class="app-header">
-      <div class="header-title">${icon('brand')}점심체크</div>
+      <div class="header-title">${icon('brand')}식사취합</div>
       <button class="avatar-btn" onclick="switchEmployeeTab('more')">${initial}</button>
     </header>
     <main class="content">${content}</main>
@@ -884,7 +893,78 @@ function renderDinner(){
       </div>
       ${dr.requested && dr.checkedByEmpId && dr.checkedByEmpId!==empId ? `<p class="muted-text">${esc(dr.checkedByName||'다른 사람')}이 신청했어요.</p>` : ''}
     </div>
+    <div class="card">
+      <h2 class="section-title">${icon('users')} 동료 대신 석식 신청</h2>
+      <p class="desc-text">함께 야근하는 동료를 대신 신청할 수 있어요.</p>
+      <input id="dinner-proxy-search" type="text" placeholder="동료 이름 검색" oninput="filterDinnerProxyResults(this.value)" />
+      <div id="dinner-proxy-results"></div>
+      ${state.dinnerProxyEditingEmpId ? renderDinnerProxyEditor(date) : ''}
+    </div>
+    <div class="card">
+      <h2 class="section-title">${icon('users')} 외부/일용직 석식</h2>
+      <div class="chip-row">
+        <button class="chip ${state.dinnerGuestType!=='일용직'?'selected':''}" onclick="setDinnerGuestType('외부인')">외부인</button>
+        <button class="chip ${state.dinnerGuestType==='일용직'?'selected':''}" onclick="setDinnerGuestType('일용직')">일용직</button>
+      </div>
+      <div class="stepper">
+        <button class="stepper-btn" onclick="stepDinnerGuestCount(-1)">${icon('minus')}</button>
+        <span class="stepper-value">${state.dinnerGuestCount||1}</span>
+        <button class="stepper-btn" onclick="stepDinnerGuestCount(1)">${icon('plus')}</button>
+      </div>
+      <input id="dinner-guest-note-input" type="text" placeholder="메모 (선택)" />
+      <button class="btn btn-primary full" onclick="submitDinnerGuest('${date}')">${icon('plus')} 추가하기</button>
+      <div style="margin-top:14px;">${renderDinnerGuestListSection(date, state.dinnerGuestsCache[date]||[])}</div>
+    </div>
   `;
+}
+function filterDinnerProxyResults(val){
+  const el = document.getElementById('dinner-proxy-results');
+  if(!el) return;
+  const q = (val||'').trim().toLowerCase();
+  if(!q){ el.innerHTML=''; return; }
+  const myId = state.myProfile.employeeId;
+  const matches = state.employees.filter(e=>e.active!==false && e.id!==myId && e.name.toLowerCase().includes(q)).slice(0,6);
+  el.innerHTML = matches.length ? matches.map(e=>`
+    <button class="quick-result-row" onclick="selectDinnerProxyEmp('${e.id}')">
+      <span class="avatar-circle sm">${esc(e.name.slice(0,1))}</span>
+      <span>${esc(e.name)} ${e.dept?`<span class="emp-row-dept">${esc(e.dept)}</span>`:''}</span>
+    </button>`).join('') : '<div class="empty-hint" style="padding:14px 8px;">일치하는 동료가 없어요</div>';
+}
+function selectDinnerProxyEmp(empId){
+  const search = document.getElementById('dinner-proxy-search');
+  const results = document.getElementById('dinner-proxy-results');
+  if(search) search.value='';
+  if(results) results.innerHTML='';
+  state.dinnerProxyEditingEmpId = empId;
+  render();
+}
+function closeDinnerProxyEditor(){ state.dinnerProxyEditingEmpId=null; render(); }
+function renderDinnerProxyEditor(date){
+  const emp = state.employees.find(e=>e.id===state.dinnerProxyEditingEmpId);
+  if(!emp) return '';
+  const dr = resolveDinnerStatus(emp.id, date);
+  return `
+    <div class="card editor-card" style="margin-top:12px;box-shadow:none;padding:14px;">
+      <div class="editor-header"><span><b>${esc(emp.name)}</b>님 대신 석식 신청</span> <button class="icon-btn" onclick="closeDinnerProxyEditor()">${icon('x')}</button></div>
+      <div class="status-buttons">
+        <button class="status-btn eat ${dr.requested?'selected':''}" onclick="proxyToggleDinnerRequest('${date}','${emp.id}')">${icon('check')}<span>${dr.requested?'신청됨 (취소하려면 다시 누르세요)':'석식 신청하기'}</span></button>
+      </div>
+    </div>`;
+}
+function renderDinnerGuestListSection(date, guests){
+  const totalCount = guests.reduce((s,g)=>s+g.count,0);
+  const rows = guests.map(g=>`
+    <div class="guest-row">
+      <div class="guest-row-main">
+        <span class="badge badge-${g.type==='외부인'?'guest':'daily'}">${g.type}</span>
+        <span class="guest-count">${g.count}명</span>
+        ${g.note?`<span class="guest-note">${esc(g.note)}</span>`:''}
+      </div>
+      <button class="icon-btn danger" onclick="removeDinnerGuestConfirm('${date}','${g.id}')">${icon('trash')}</button>
+      <div class="guest-row-meta">${esc(g.addedBy)} 등록</div>
+    </div>`).join('');
+  return (rows || '<p class="empty-hint">아직 등록된 외부/일용직 석식 인원이 없어요.</p>')
+    + (guests.length ? `<div class="total-row">합계 <b>${totalCount}명</b></div>` : '');
 }
 async function saveCustomReason(date){
   const val = document.getElementById('custom-reason-input').value.trim();
@@ -932,6 +1012,46 @@ async function toggleDinnerRequest(dateStr){
   render();
   const ok = await Store.set('dinnerRequests:'+dateStr, day);
   toast(ok?'저장되었습니다':'저장에 실패했어요', !ok);
+}
+async function proxyToggleDinnerRequest(dateStr, targetEmpId){
+  if(!state.myProfile) return;
+  const day = {...(state.dinnerCache[dateStr]||{})};
+  const current = !!(day[targetEmpId] && day[targetEmpId].requested);
+  if(current){
+    delete day[targetEmpId];
+  }else{
+    day[targetEmpId] = {requested:true, updatedAt: Date.now(), checkedByEmpId: state.myProfile.employeeId, checkedByName: state.myProfile.name};
+  }
+  state.dinnerCache[dateStr] = day;
+  render();
+  const ok = await Store.set('dinnerRequests:'+dateStr, day);
+  toast(ok?'저장되었습니다':'저장에 실패했어요', !ok);
+}
+function setDinnerGuestType(t){ state.dinnerGuestType=t; render(); }
+function stepDinnerGuestCount(delta){ state.dinnerGuestCount = Math.max(1, Math.min(99, (state.dinnerGuestCount||1)+delta)); render(); }
+async function submitDinnerGuest(date){
+  const noteInput = document.getElementById('dinner-guest-note-input');
+  const note = noteInput ? noteInput.value.trim() : '';
+  const type = state.dinnerGuestType || '외부인';
+  const count = state.dinnerGuestCount || 1;
+  const entry = {id:genId(), type, count, note, addedBy: state.myProfile?state.myProfile.name:'관리자', addedByEmpId: state.myProfile?state.myProfile.employeeId:null, addedAt:Date.now()};
+  const list = [...(state.dinnerGuestsCache[date]||[]), entry];
+  state.dinnerGuestsCache[date] = list;
+  state.dinnerGuestCount = 1;
+  render();
+  const ok = await Store.set('dinnerGuests:'+date, list);
+  toast(ok?'추가되었어요':'저장에 실패했어요', !ok);
+}
+function removeDinnerGuestConfirm(date, id){
+  if(!confirm('삭제하시겠어요?')) return;
+  removeDinnerGuest(date, id);
+}
+async function removeDinnerGuest(date, id){
+  const list = (state.dinnerGuestsCache[date]||[]).filter(g=>g.id!==id);
+  state.dinnerGuestsCache[date] = list;
+  render();
+  const ok = await Store.set('dinnerGuests:'+date, list);
+  toast(ok?'삭제되었어요':'삭제에 실패했어요', !ok);
 }
 async function adminToggleDinner(dateStr, empId, on){
   const day = {...(state.dinnerCache[dateStr]||{})};
@@ -1131,7 +1251,7 @@ function renderMore(){
     </div>
     <button class="btn btn-outline full" onclick="switchIdentity()" style="margin-bottom:10px;">다른 사람으로 전환하기</button>
     <button class="btn btn-outline full" onclick="goAdminPin()">${icon('lock')} 관리자 로그인</button>
-    <p class="footer-note">다름달음 점심체크 · 테스트 버전</p>
+    <p class="footer-note">다름달음 식사취합 · 테스트 버전</p>
   `;
 }
 
@@ -1191,7 +1311,10 @@ function computeDinnerSummary(dateStr){
     const emp = state.employees.find(e=>e.id===id);
     return { empId:id, name: emp?emp.name:'(삭제된 직원)', dept: emp?(emp.dept||''):'', checkedByEmpId: day[id].checkedByEmpId||null, checkedByName: day[id].checkedByName||null };
   }).sort((a,b)=>a.name.localeCompare(b.name,'ko'));
-  return { count: list.length, list };
+  const guests = state.dinnerGuestsCache[dateStr] || [];
+  let guestBreakdown = {}, guestTotal = 0;
+  for(const g of guests){ guestBreakdown[g.type]=(guestBreakdown[g.type]||0)+g.count; guestTotal+=g.count; }
+  return { count: list.length, list, guestTotal, guestBreakdown, guests, total: list.length + guestTotal };
 }
 function generateVendorText(dateStr){
   const s = computeDailySummary(dateStr);
@@ -1207,7 +1330,7 @@ function generateVendorText(dateStr){
   lines.push(dateLabel);
   lines.push(`총 ${total}명`);
   if(s.uncheckedList.length) lines.push(`\n※ 미체크 ${s.uncheckedList.length}명은 별도 확인이 필요해요`);
-  if(dinner.count>0) lines.push(`\n[석식 신청]\n${dinner.count}명`);
+  if(dinner.total>0) lines.push(`\n[석식 신청]\n${dinner.total}명`);
   return lines.join('\n');
 }
 async function loadSettlementMonth(monthStr){
@@ -1222,7 +1345,7 @@ async function loadSettlementMonth(monthStr){
     const dinner = computeDinnerSummary(d);
     const guestExt = s.guestBreakdown['외부인'] || 0;
     const guestDay = s.guestBreakdown['일용직'] || 0;
-    return { date: d, eat: s.eatCount, guestExt, guestDay, guestTotal: s.guestTotal, total: s.eatCount + s.guestTotal, unchecked: s.uncheckedList.length, dinner: dinner.count };
+    return { date: d, eat: s.eatCount, guestExt, guestDay, guestTotal: s.guestTotal, total: s.eatCount + s.guestTotal, unchecked: s.uncheckedList.length, dinner: dinner.total };
   });
   state.settlementLoading = false;
   render();
@@ -1297,7 +1420,7 @@ function downloadSettlementCSV(){
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `${(state.settings.companyName||'점심')}_점심정산_${state.settlementMonth}.csv`;
+  a.download = `${(state.settings.companyName||'식사')}_식사정산_${state.settlementMonth}.csv`;
   document.body.appendChild(a); a.click(); a.remove();
   URL.revokeObjectURL(url);
   toast('다운로드 되었어요');
@@ -1535,12 +1658,33 @@ function renderAdminDashboard(){
       <input id="admin-dinner-quick-search" type="text" placeholder="이름 검색해서 추가" oninput="filterAdminDinnerQuickResults(this.value,'${date}')" />
       <div id="admin-dinner-quick-results"></div>
       <div class="stat-grid" style="margin-top:10px;margin-bottom:10px;">
-        <div class="stat-card highlight"><div class="stat-num">${dinnerSummary.count}</div><div class="stat-label">석식 신청</div></div>
+        <div class="stat-card highlight"><div class="stat-num">${dinnerSummary.total}</div><div class="stat-label">석식 총 인원</div></div>
+        <div class="stat-card"><div class="stat-num">${dinnerSummary.count}</div><div class="stat-label">직원</div></div>
+        <div class="stat-card"><div class="stat-num">${dinnerSummary.guestTotal}</div><div class="stat-label">외부·일용직</div></div>
       </div>
       <div class="emp-list">${dinnerRows || '<p class="empty-hint">아직 신청자가 없어요.</p>'}</div>
     </div>
+    <div class="card">
+      <h2 class="section-title">${icon('users')} 외부/일용직 석식</h2>
+      ${renderDinnerGuestListSection(date, dinnerSummary.guests)}
+      <button class="btn btn-outline full small" style="margin-top:12px;" onclick="toggleAdminDinnerGuestAdd()">${icon('plus')} 인원 추가</button>
+      ${state.showAdminDinnerGuestAdd ? `
+        <div class="chip-row" style="margin-top:12px;">
+          <button class="chip ${state.dinnerGuestType!=='일용직'?'selected':''}" onclick="setDinnerGuestType('외부인')">외부인</button>
+          <button class="chip ${state.dinnerGuestType==='일용직'?'selected':''}" onclick="setDinnerGuestType('일용직')">일용직</button>
+        </div>
+        <div class="stepper">
+          <button class="stepper-btn" onclick="stepDinnerGuestCount(-1)">${icon('minus')}</button>
+          <span class="stepper-value">${state.dinnerGuestCount||1}</span>
+          <button class="stepper-btn" onclick="stepDinnerGuestCount(1)">${icon('plus')}</button>
+        </div>
+        <input id="dinner-guest-note-input" type="text" placeholder="메모 (선택)" />
+        <button class="btn btn-primary full" onclick="submitDinnerGuest('${date}')">${icon('plus')} 추가하기</button>
+      ` : ''}
+    </div>
   `;
 }
+function toggleAdminDinnerGuestAdd(){ state.showAdminDinnerGuestAdd=!state.showAdminDinnerGuestAdd; render(); }
 
 /* ----- 직원관리 ----- */
 function renderEmployeeEditForm(){
