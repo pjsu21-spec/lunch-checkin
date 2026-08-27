@@ -840,17 +840,27 @@ function renderProxyEditor(date){
   const r = resolveStatus(emp.id, date);
   const reasonChips = REASONS.map(rs=>{
     const sel = r.reason===rs || (rs==='기타' && r.reason.startsWith('기타'));
-    return `<button class="chip sm ${sel?'selected':''}" onclick="proxyCheckStatus('${date}','${emp.id}','skip','${rs}')">${rs}</button>`;
+    return `<button class="chip sm ${sel?'selected':''}" onclick="confirmedProxyCheckStatus('${date}','${emp.id}','skip','${rs}')">${rs}</button>`;
   }).join('');
   return `
     <div class="card editor-card" style="margin-top:12px;box-shadow:none;padding:14px;">
       <div class="editor-header"><span><b>${esc(emp.name)}</b>님 대신 체크</span> <button class="icon-btn" onclick="closeProxyEditor()">${icon('x')}</button></div>
+      ${r.source==='manual' ? `<p class="muted-text">이미 <b>${r.status==='eat'?'식사':'미식사'}</b>로 체크되어 있어요${r.checkedByEmpId===emp.id?' (본인 체크)':(r.checkedByName?` (${esc(r.checkedByName)} 체크)`:'')}.</p>` : ''}
       <div class="status-buttons">
-        <button class="status-btn eat ${r.status==='eat'?'selected':''}" onclick="proxyCheckStatus('${date}','${emp.id}','eat')">${icon('check')}<span>식사</span></button>
-        <button class="status-btn skip ${r.status==='skip'?'selected':''}" onclick="proxyCheckStatus('${date}','${emp.id}','skip','')">${icon('x')}<span>미식사</span></button>
+        <button class="status-btn eat ${r.status==='eat'?'selected':''}" onclick="confirmedProxyCheckStatus('${date}','${emp.id}','eat')">${icon('check')}<span>식사</span></button>
+        <button class="status-btn skip ${r.status==='skip'?'selected':''}" onclick="confirmedProxyCheckStatus('${date}','${emp.id}','skip','')">${icon('x')}<span>미식사</span></button>
       </div>
       ${r.status==='skip' ? `<div class="chip-grid">${reasonChips}</div>` : ''}
     </div>`;
+}
+function confirmedProxyCheckStatus(date, empId, status, reason){
+  const r = resolveStatus(empId, date);
+  if(r.source==='manual' && r.status!==status){
+    const curLabel = r.status==='eat' ? '식사' : '미식사';
+    const who = r.checkedByEmpId===empId ? '본인이' : (r.checkedByName ? `${r.checkedByName}님이` : '이미');
+    if(!confirm(`${who} '${curLabel}'로 이미 체크했어요. 변경하시겠어요?`)) return;
+  }
+  proxyCheckStatus(date, empId, status, reason);
 }
 function renderDinner(){
   const date = state.selectedDate;
@@ -946,10 +956,20 @@ function renderDinnerProxyEditor(date){
   return `
     <div class="card editor-card" style="margin-top:12px;box-shadow:none;padding:14px;">
       <div class="editor-header"><span><b>${esc(emp.name)}</b>님 대신 석식 신청</span> <button class="icon-btn" onclick="closeDinnerProxyEditor()">${icon('x')}</button></div>
+      ${dr.requested ? `<p class="muted-text">이미 신청되어 있어요${dr.checkedByEmpId===emp.id?' (본인 신청)':(dr.checkedByName?` (${esc(dr.checkedByName)} 신청)`:'')}.</p>` : ''}
       <div class="status-buttons">
-        <button class="status-btn eat ${dr.requested?'selected':''}" onclick="proxyToggleDinnerRequest('${date}','${emp.id}')">${icon('check')}<span>${dr.requested?'신청됨 (취소하려면 다시 누르세요)':'석식 신청하기'}</span></button>
+        <button class="status-btn eat ${dr.requested?'selected':''}" onclick="confirmedProxyToggleDinner('${date}','${emp.id}')">${icon('check')}<span>${dr.requested?'신청됨 (취소하려면 다시 누르세요)':'석식 신청하기'}</span></button>
       </div>
     </div>`;
+}
+function confirmedProxyToggleDinner(date, empId){
+  const dr = resolveDinnerStatus(empId, date);
+  if(dr.requested){
+    const emp = state.employees.find(e=>e.id===empId);
+    const who = dr.checkedByEmpId===empId ? '본인이' : (dr.checkedByName ? `${dr.checkedByName}님이` : '이미');
+    if(!confirm(`${who} ${esc(emp?emp.name:'')}님 석식을 이미 신청했어요. 취소하시겠어요?`)) return;
+  }
+  proxyToggleDinnerRequest(date, empId);
 }
 function renderDinnerGuestListSection(date, guests){
   const totalCount = guests.reduce((s,g)=>s+g.count,0);
@@ -1088,20 +1108,30 @@ async function shiftWeek(n){
 /* ----- 정기설정 탭 ----- */
 function renderRecurring(){
   const empId = state.myProfile.employeeId;
+  const hasPattern = !!state.recurringPatterns[empId];
   const pattern = state.recurringPatterns[empId] || {mon:false,tue:false,wed:false,thu:false,fri:false,sat:false,sun:false};
   const dayToggles = DOW_ORDER.map(k=>`
     <button class="day-toggle ${pattern[k]?'selected':''}" onclick="toggleRecurringDay('${k}')">
       <span>${DOW_LABELS[k]}</span>
-      <span class="day-toggle-status">${pattern[k]?'식사':'—'}</span>
+      <span class="day-toggle-status">${pattern[k]?'식사':'미식사'}</span>
     </button>`).join('');
+  const weekdaysOn = ['mon','tue','wed','thu','fri'].every(k=>pattern[k]) && !pattern.sat && !pattern.sun;
+  const allOn = DOW_ORDER.every(k=>pattern[k]);
+  const allOff = DOW_ORDER.every(k=>!pattern[k]);
+  let statusText = '요일별로 직접 설정한 패턴';
+  if(!hasPattern) statusText = '아직 설정 안 함 (매일 개별 체크 필요)';
+  else if(allOff) statusText = '항상 점심 안 먹음';
+  else if(allOn) statusText = '매일 식사';
+  else if(weekdaysOn) statusText = '평일만 식사';
   return `
     <div class="card">
       <h2 class="section-title">${icon('gear')} 정기 식사 패턴</h2>
-      <p class="desc-text">요일별로 기본 식사 여부를 설정해두면 매주 자동으로 적용돼요. 특정 날짜만 다르면 '오늘' 탭에서 그 날짜를 선택해 개별로 바꾸면 됩니다.</p>
+      <p class="desc-text">요일별로 기본 식사 여부를 설정해두면 매주 자동으로 적용돼요. 특정 날짜만 다르면 '중식' 탭에서 그 날짜를 선택해 개별로 바꾸면 됩니다.</p>
+      <p class="muted-text">현재 설정: <b>${statusText}</b></p>
       <div class="preset-row">
         <button class="btn btn-outline small" onclick="applyPreset('weekday')">평일만 먹기</button>
         <button class="btn btn-outline small" onclick="applyPreset('all')">매일 먹기</button>
-        <button class="btn btn-outline small" onclick="applyPreset('none')">전체 해제</button>
+        <button class="btn btn-outline small" onclick="applyPreset('none')">점심 안 먹음</button>
       </div>
       <div class="day-toggle-grid">${dayToggles}</div>
     </div>
