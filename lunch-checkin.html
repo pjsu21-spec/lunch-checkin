@@ -442,6 +442,20 @@ const Store = {
   }
 };
 
+/* 여러 사람이 거의 동시에 같은 날짜 데이터를 저장할 때 서로 덮어쓰지 않도록,
+   쓰기 직전에 서버의 최신 값을 다시 받아온 뒤 그 위에 변경사항만 반영해서 저장한다.
+   (완벽한 동시성 보장은 아니지만, "예전 스냅샷 통째로 덮어쓰기"로 인한 유실은 크게 줄여준다) */
+async function mergeUpdate(key, defaultValue, mutateFn, shared=true){
+  let fresh;
+  try{
+    fresh = await Store.get(key, shared);
+  }catch(e){ fresh = null; }
+  if(fresh===null || fresh===undefined) fresh = Array.isArray(defaultValue) ? [] : {...defaultValue};
+  const updated = mutateFn(fresh);
+  const ok = await Store.set(key, updated, shared);
+  return { ok, updated };
+}
+
 /* ----------------------- 상태 ----------------------- */
 let state = {
   view:'loading',
@@ -994,57 +1008,66 @@ async function saveCustomReason(date){
 async function setMyStatus(dateStr, status, reason){
   if(reason===undefined) reason='';
   if(!state.myProfile) return;
+  const empId = state.myProfile.employeeId;
+  const entry = {status, reason, updatedAt: Date.now(), checkedByEmpId: empId, checkedByName: state.myProfile.name};
   const prevDay = {...(state.checkinsCache[dateStr]||{})};
-  const day = {...(state.checkinsCache[dateStr]||{})};
-  day[state.myProfile.employeeId] = {status, reason, updatedAt: Date.now(), checkedByEmpId: state.myProfile.employeeId, checkedByName: state.myProfile.name};
-  state.checkinsCache[dateStr] = day;
+  state.checkinsCache[dateStr] = {...prevDay, [empId]: entry};
   render();
-  const ok = await Store.set('checkins:'+dateStr, day);
+  const { ok, updated } = await mergeUpdate('checkins:'+dateStr, {}, fresh => ({...fresh, [empId]: entry}));
   if(!ok){
     state.checkinsCache[dateStr] = prevDay;
     render();
     toast('저장에 실패했어요. 다시 시도해주세요.', true);
   }else{
+    state.checkinsCache[dateStr] = updated;
+    render();
     toast('저장되었습니다');
   }
 }
 async function proxyCheckStatus(dateStr, targetEmpId, status, reason){
   if(reason===undefined) reason='';
   if(!state.myProfile) return;
-  const day = {...(state.checkinsCache[dateStr]||{})};
-  day[targetEmpId] = {status, reason, updatedAt: Date.now(), checkedByEmpId: state.myProfile.employeeId, checkedByName: state.myProfile.name};
-  state.checkinsCache[dateStr] = day;
+  const entry = {status, reason, updatedAt: Date.now(), checkedByEmpId: state.myProfile.employeeId, checkedByName: state.myProfile.name};
+  state.checkinsCache[dateStr] = {...(state.checkinsCache[dateStr]||{}), [targetEmpId]: entry};
   render();
-  const ok = await Store.set('checkins:'+dateStr, day);
+  const { ok, updated } = await mergeUpdate('checkins:'+dateStr, {}, fresh => ({...fresh, [targetEmpId]: entry}));
+  if(ok) state.checkinsCache[dateStr] = updated;
+  render();
   toast(ok?'저장되었습니다':'저장에 실패했어요', !ok);
 }
 async function toggleDinnerRequest(dateStr){
   if(!state.myProfile) return;
   const empId = state.myProfile.employeeId;
-  const day = {...(state.dinnerCache[dateStr]||{})};
-  const current = !!(day[empId] && day[empId].requested);
-  if(current){
-    delete day[empId];
-  }else{
-    day[empId] = {requested:true, updatedAt: Date.now(), checkedByEmpId: empId, checkedByName: state.myProfile.name};
-  }
-  state.dinnerCache[dateStr] = day;
+  const wasRequested = !!(state.dinnerCache[dateStr] && state.dinnerCache[dateStr][empId] && state.dinnerCache[dateStr][empId].requested);
+  const entry = wasRequested ? null : {requested:true, updatedAt: Date.now(), checkedByEmpId: empId, checkedByName: state.myProfile.name};
+  const optimistic = {...(state.dinnerCache[dateStr]||{})};
+  if(entry) optimistic[empId]=entry; else delete optimistic[empId];
+  state.dinnerCache[dateStr] = optimistic;
   render();
-  const ok = await Store.set('dinnerRequests:'+dateStr, day);
+  const { ok, updated } = await mergeUpdate('dinnerRequests:'+dateStr, {}, fresh => {
+    const next = {...fresh};
+    if(entry) next[empId]=entry; else delete next[empId];
+    return next;
+  });
+  if(ok) state.dinnerCache[dateStr] = updated;
+  render();
   toast(ok?'저장되었습니다':'저장에 실패했어요', !ok);
 }
 async function proxyToggleDinnerRequest(dateStr, targetEmpId){
   if(!state.myProfile) return;
-  const day = {...(state.dinnerCache[dateStr]||{})};
-  const current = !!(day[targetEmpId] && day[targetEmpId].requested);
-  if(current){
-    delete day[targetEmpId];
-  }else{
-    day[targetEmpId] = {requested:true, updatedAt: Date.now(), checkedByEmpId: state.myProfile.employeeId, checkedByName: state.myProfile.name};
-  }
-  state.dinnerCache[dateStr] = day;
+  const wasRequested = !!(state.dinnerCache[dateStr] && state.dinnerCache[dateStr][targetEmpId] && state.dinnerCache[dateStr][targetEmpId].requested);
+  const entry = wasRequested ? null : {requested:true, updatedAt: Date.now(), checkedByEmpId: state.myProfile.employeeId, checkedByName: state.myProfile.name};
+  const optimistic = {...(state.dinnerCache[dateStr]||{})};
+  if(entry) optimistic[targetEmpId]=entry; else delete optimistic[targetEmpId];
+  state.dinnerCache[dateStr] = optimistic;
   render();
-  const ok = await Store.set('dinnerRequests:'+dateStr, day);
+  const { ok, updated } = await mergeUpdate('dinnerRequests:'+dateStr, {}, fresh => {
+    const next = {...fresh};
+    if(entry) next[targetEmpId]=entry; else delete next[targetEmpId];
+    return next;
+  });
+  if(ok) state.dinnerCache[dateStr] = updated;
+  render();
   toast(ok?'저장되었습니다':'저장에 실패했어요', !ok);
 }
 function setDinnerGuestType(t){ state.dinnerGuestType=t; render(); }
@@ -1055,11 +1078,12 @@ async function submitDinnerGuest(date){
   const type = state.dinnerGuestType || '외부인';
   const count = state.dinnerGuestCount || 1;
   const entry = {id:genId(), type, count, note, addedBy: state.myProfile?state.myProfile.name:'관리자', addedByEmpId: state.myProfile?state.myProfile.employeeId:null, addedAt:Date.now()};
-  const list = [...(state.dinnerGuestsCache[date]||[]), entry];
-  state.dinnerGuestsCache[date] = list;
+  state.dinnerGuestsCache[date] = [...(state.dinnerGuestsCache[date]||[]), entry];
   state.dinnerGuestCount = 1;
   render();
-  const ok = await Store.set('dinnerGuests:'+date, list);
+  const { ok, updated } = await mergeUpdate('dinnerGuests:'+date, [], fresh => [...(fresh||[]), entry]);
+  if(ok) state.dinnerGuestsCache[date] = updated;
+  render();
   toast(ok?'추가되었어요':'저장에 실패했어요', !ok);
 }
 function removeDinnerGuestConfirm(date, id){
@@ -1067,30 +1091,42 @@ function removeDinnerGuestConfirm(date, id){
   removeDinnerGuest(date, id);
 }
 async function removeDinnerGuest(date, id){
-  const list = (state.dinnerGuestsCache[date]||[]).filter(g=>g.id!==id);
-  state.dinnerGuestsCache[date] = list;
+  state.dinnerGuestsCache[date] = (state.dinnerGuestsCache[date]||[]).filter(g=>g.id!==id);
   render();
-  const ok = await Store.set('dinnerGuests:'+date, list);
+  const { ok, updated } = await mergeUpdate('dinnerGuests:'+date, [], fresh => (fresh||[]).filter(g=>g.id!==id));
+  if(ok) state.dinnerGuestsCache[date] = updated;
+  render();
   toast(ok?'삭제되었어요':'삭제에 실패했어요', !ok);
 }
 async function adminToggleDinner(dateStr, empId, on){
-  const day = {...(state.dinnerCache[dateStr]||{})};
-  if(on){
-    day[empId] = {requested:true, updatedAt: Date.now(), checkedByEmpId:'admin', checkedByName:'관리자'};
-  }else{
-    delete day[empId];
-  }
-  state.dinnerCache[dateStr] = day;
+  const entry = on ? {requested:true, updatedAt: Date.now(), checkedByEmpId:'admin', checkedByName:'관리자'} : null;
+  const optimistic = {...(state.dinnerCache[dateStr]||{})};
+  if(entry) optimistic[empId]=entry; else delete optimistic[empId];
+  state.dinnerCache[dateStr] = optimistic;
   render();
-  const ok = await Store.set('dinnerRequests:'+dateStr, day);
+  const { ok, updated } = await mergeUpdate('dinnerRequests:'+dateStr, {}, fresh => {
+    const next = {...fresh};
+    if(entry) next[empId]=entry; else delete next[empId];
+    return next;
+  });
+  if(ok) state.dinnerCache[dateStr] = updated;
+  render();
   toast(ok?'저장되었습니다':'저장에 실패했어요', !ok);
 }
 async function revertToPattern(dateStr){
-  const day = {...(state.checkinsCache[dateStr]||{})};
-  delete day[state.myProfile.employeeId];
-  state.checkinsCache[dateStr] = day;
+  const empId = state.myProfile.employeeId;
+  const prevDay = {...(state.checkinsCache[dateStr]||{})};
+  const optimistic = {...prevDay};
+  delete optimistic[empId];
+  state.checkinsCache[dateStr] = optimistic;
   render();
-  await Store.set('checkins:'+dateStr, day);
+  const { ok, updated } = await mergeUpdate('checkins:'+dateStr, {}, fresh => {
+    const next = {...fresh};
+    delete next[empId];
+    return next;
+  });
+  if(ok) state.checkinsCache[dateStr] = updated;
+  render();
 }
 async function selectDate(dateStr){
   state.selectedDate = dateStr;
@@ -1151,9 +1187,12 @@ function applyPreset(kind){
   updateMyPattern(pattern);
 }
 async function updateMyPattern(pattern){
-  state.recurringPatterns[state.myProfile.employeeId] = pattern;
+  const empId = state.myProfile.employeeId;
+  state.recurringPatterns = {...state.recurringPatterns, [empId]: pattern};
   render();
-  const ok = await Store.set('recurringPatterns', state.recurringPatterns);
+  const { ok, updated } = await mergeUpdate('recurringPatterns', {}, fresh => ({...fresh, [empId]: pattern}));
+  if(ok) state.recurringPatterns = updated;
+  render();
   toast(ok?'정기 설정이 저장되었어요':'저장에 실패했어요', !ok);
 }
 
@@ -1244,11 +1283,12 @@ async function submitGuest(date){
   const type = state.guestType || '외부인';
   const count = state.guestCount || 1;
   const entry = {id:genId(), type, count, note, addedBy: state.myProfile?state.myProfile.name:'관리자', addedByEmpId: state.myProfile?state.myProfile.employeeId:null, addedAt:Date.now()};
-  const list = [...(state.guestsCache[date]||[]), entry];
-  state.guestsCache[date] = list;
+  state.guestsCache[date] = [...(state.guestsCache[date]||[]), entry];
   state.guestCount = 1;
   render();
-  const ok = await Store.set('guests:'+date, list);
+  const { ok, updated } = await mergeUpdate('guests:'+date, [], fresh => [...(fresh||[]), entry]);
+  if(ok) state.guestsCache[date] = updated;
+  render();
   toast(ok?'추가되었어요':'저장에 실패했어요', !ok);
 }
 function removeGuestConfirm(date, id){
@@ -1256,10 +1296,11 @@ function removeGuestConfirm(date, id){
   removeGuest(date, id);
 }
 async function removeGuest(date, id){
-  const list = (state.guestsCache[date]||[]).filter(g=>g.id!==id);
-  state.guestsCache[date] = list;
+  state.guestsCache[date] = (state.guestsCache[date]||[]).filter(g=>g.id!==id);
   render();
-  const ok = await Store.set('guests:'+date, list);
+  const { ok, updated } = await mergeUpdate('guests:'+date, [], fresh => (fresh||[]).filter(g=>g.id!==id));
+  if(ok) state.guestsCache[date] = updated;
+  render();
   toast(ok?'삭제되었어요':'삭제에 실패했어요', !ok);
 }
 async function shiftGuestDate(n){
@@ -1419,6 +1460,16 @@ function renderAdminSettlement(){
       ` : '<div class="empty-hint">해당 월에 데이터가 아직 없어요</div>')}
     </div>`;
 }
+function csvEscape(val){
+  if(val===null || val===undefined) return '';
+  let s = String(val);
+  if(/^[=+\-@]/.test(s)) s = "'" + s; // 엑셀에서 수식으로 오인식되는 것 방지 (CSV 인젝션 방지)
+  if(/[",\n\r]/.test(s)){
+    s = '"' + s.replace(/"/g,'""') + '"';
+  }
+  return s;
+}
+function csvRow(cols){ return cols.map(csvEscape).join(','); }
 function downloadSettlementCSV(){
   const rows = state.settlementRows || [];
   if(!rows.length){ toast('다운로드할 데이터가 없어요', true); return; }
@@ -1429,7 +1480,7 @@ function downloadSettlementCSV(){
   if(unitPrice) header.push('중식 금액(원)');
   header.push('석식 신청');
   if(dinnerPrice) header.push('석식 금액(원)');
-  const lines = [header.join(',')];
+  const lines = [csvRow(header)];
   let sumEat=0, sumExt=0, sumDay=0, sumTotal=0, sumDinner=0;
   for(const r of rows){
     const d = new Date(r.date+'T00:00:00');
@@ -1438,13 +1489,13 @@ function downloadSettlementCSV(){
     if(unitPrice) cols.push(r.total*unitPrice);
     cols.push(r.dinner);
     if(dinnerPrice) cols.push(r.dinner*dinnerPrice);
-    lines.push(cols.join(','));
+    lines.push(csvRow(cols));
   }
   const totalCols = ['합계','', sumEat, sumExt, sumDay, sumTotal];
   if(unitPrice) totalCols.push(sumTotal*unitPrice);
   totalCols.push(sumDinner);
   if(dinnerPrice) totalCols.push(sumDinner*dinnerPrice);
-  lines.push(totalCols.join(','));
+  lines.push(csvRow(totalCols));
   const csv = '\uFEFF' + lines.join('\r\n');
   const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
   const url = URL.createObjectURL(blob);
@@ -1481,28 +1532,37 @@ function openAdminStatusEditor(empId){ state.adminEditingEmpId=empId; render(); 
 function closeAdminStatusEditor(){ state.adminEditingEmpId=null; render(); }
 async function adminSetStatus(date, empId, status, reason){
   if(reason===undefined) reason='';
-  const day = {...(state.checkinsCache[date]||{})};
-  day[empId] = {status, reason, updatedAt:Date.now(), setBy:'admin'};
-  state.checkinsCache[date] = day;
+  const entry = {status, reason, updatedAt:Date.now(), setBy:'admin'};
+  state.checkinsCache[date] = {...(state.checkinsCache[date]||{}), [empId]: entry};
   render();
-  await Store.set('checkins:'+date, day);
+  const { ok, updated } = await mergeUpdate('checkins:'+date, {}, fresh => ({...fresh, [empId]: entry}));
+  if(ok) state.checkinsCache[date] = updated;
+  render();
 }
 async function adminRevertToPattern(date, empId){
-  const day = {...(state.checkinsCache[date]||{})};
-  delete day[empId];
-  state.checkinsCache[date] = day;
+  const optimistic = {...(state.checkinsCache[date]||{})};
+  delete optimistic[empId];
+  state.checkinsCache[date] = optimistic;
   render();
-  await Store.set('checkins:'+date, day);
+  const { ok, updated } = await mergeUpdate('checkins:'+date, {}, fresh => {
+    const next = {...fresh};
+    delete next[empId];
+    return next;
+  });
+  if(ok) state.checkinsCache[date] = updated;
+  render();
 }
 async function bulkMarkUnchecked(date, status){
   const label = status==='eat' ? '식사' : '미식사';
   if(!confirm(`미체크 인원을 모두 '${label}'로 표시할까요?`)) return;
   const summary = computeDailySummary(date);
-  const day = {...(state.checkinsCache[date]||{})};
-  for(const emp of summary.uncheckedList){ day[emp.id] = {status, reason:'', updatedAt:Date.now(), setBy:'admin'}; }
-  state.checkinsCache[date] = day;
+  const entries = {};
+  for(const emp of summary.uncheckedList){ entries[emp.id] = {status, reason:'', updatedAt:Date.now(), setBy:'admin'}; }
+  state.checkinsCache[date] = {...(state.checkinsCache[date]||{}), ...entries};
   render();
-  await Store.set('checkins:'+date, day);
+  const { ok, updated } = await mergeUpdate('checkins:'+date, {}, fresh => ({...fresh, ...entries}));
+  if(ok) state.checkinsCache[date] = updated;
+  render();
   toast('일괄 처리되었어요');
 }
 function filterAdminQuickResults(val){
@@ -1887,13 +1947,20 @@ async function savePinSetting(){
 async function exportBackup(){
   const checkinKeys = await Store.list('checkins:');
   const guestKeys = await Store.list('guests:');
+  const dinnerKeys = await Store.list('dinnerRequests:');
+  const dinnerGuestKeys = await Store.list('dinnerGuests:');
   const checkinsData = {};
   for(const k of checkinKeys){ checkinsData[k] = await Store.get(k); }
   const guestsData = {};
   for(const k of guestKeys){ guestsData[k] = await Store.get(k); }
+  const dinnerData = {};
+  for(const k of dinnerKeys){ dinnerData[k] = await Store.get(k); }
+  const dinnerGuestsData = {};
+  for(const k of dinnerGuestKeys){ dinnerGuestsData[k] = await Store.get(k); }
   const backup = {
     employees: state.employees, settings: state.settings, recurringPatterns: state.recurringPatterns,
-    checkins: checkinsData, guests: guestsData, exportedAt: new Date().toISOString()
+    checkins: checkinsData, guests: guestsData, dinnerRequests: dinnerData, dinnerGuests: dinnerGuestsData,
+    exportedAt: new Date().toISOString()
   };
   const blob = new Blob([JSON.stringify(backup,null,2)], {type:'application/json'});
   const url = URL.createObjectURL(blob);
@@ -1920,7 +1987,9 @@ function importBackupFile(file){
       if(data.recurringPatterns){ state.recurringPatterns = data.recurringPatterns; await Store.set('recurringPatterns', state.recurringPatterns); }
       if(data.checkins){ for(const [k,v] of Object.entries(data.checkins)){ await Store.set(k, v); } }
       if(data.guests){ for(const [k,v] of Object.entries(data.guests)){ await Store.set(k, v); } }
-      state.checkinsCache = {}; state.guestsCache = {};
+      if(data.dinnerRequests){ for(const [k,v] of Object.entries(data.dinnerRequests)){ await Store.set(k, v); } }
+      if(data.dinnerGuests){ for(const [k,v] of Object.entries(data.dinnerGuests)){ await Store.set(k, v); } }
+      state.checkinsCache = {}; state.guestsCache = {}; state.dinnerCache = {}; state.dinnerGuestsCache = {};
       await loadDateData(state.adminDate);
       toast('복원되었어요');
       render();
