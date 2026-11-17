@@ -305,8 +305,9 @@ Resources:`;for(let t of c){if(!t||typeof t!=`string`)throw Error(`@supabase/aut
    ⚠️ 필수 설정: 아래 두 값을 본인 Supabase 프로젝트 값으로 바꿔주세요.
    Supabase 대시보드 > Settings > API 에서 확인할 수 있어요.
    ========================================================================= */
-const SUPABASE_URL = 'https://ndiirniuqixwoehnjlnc.supabase.co';
-const SUPABASE_ANON_KEY = 'sb_publishable_VpZAqF8fzO8zqvtXKCEhPA_v1XwcSZd';
+// 2026-11: 통합 시스템 서버로 옮김 (예전: ndiirniuqixwoehnjlnc)
+const SUPABASE_URL = 'https://rsgbqlrxtexknhsvkroc.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_Es6Y1pOe1friYzEnvT0iSw_gqQQvFvJ';
 let sbClient = null;
 let __sbSetupError = '';
 if(typeof window.supabase === 'undefined'){
