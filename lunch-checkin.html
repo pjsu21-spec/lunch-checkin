@@ -177,6 +177,29 @@ textarea{resize:vertical;min-height:84px;}
 .key-btn.empty{background:transparent;pointer-events:none;}
 
 /* ===================== 날짜 카드 / 주간 스트립 ===================== */
+.menu-card{padding:14px 16px;}
+.menu-head{display:flex;align-items:center;gap:6px;font-size:14px;margin-bottom:8px;}
+.menu-head .icon{width:18px;height:18px;color:var(--vine);}
+.menu-head .link-btn{margin-left:auto;}
+.menu-items{display:flex;flex-wrap:wrap;gap:6px;}
+.menu-item{background:var(--vine-tint);color:var(--vine-dark);border-radius:999px;padding:5px 11px;font-size:13.5px;font-weight:700;}
+.menu-other{margin-top:8px;font-size:12.5px;color:var(--text-secondary);display:flex;align-items:center;gap:4px;flex-wrap:wrap;}
+.menu-other .icon{width:14px;height:14px;}
+.menu-week{display:flex;flex-direction:column;gap:8px;margin-bottom:6px;}
+.menu-day{display:block;width:100%;text-align:left;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:11px 14px;box-shadow:var(--shadow-sm);cursor:pointer;}
+.menu-day.is-today{border-color:var(--vine);box-shadow:0 0 0 2px var(--vine-tint);}
+.menu-day-head{font-size:13px;color:var(--text-secondary);margin-bottom:5px;}
+.menu-day-head b{color:var(--text);font-size:14px;margin-right:2px;}
+.menu-today{background:var(--vine);color:#fff;border-radius:6px;padding:1px 6px;font-size:11px;font-weight:700;margin-left:4px;}
+.menu-meal{font-size:13.5px;line-height:1.55;display:flex;gap:8px;align-items:baseline;}
+.menu-meal-lbl{flex:0 0 auto;font-size:11px;font-weight:800;color:var(--vine-dark);background:var(--vine-tint);border-radius:6px;padding:1px 6px;}
+.menu-meal-lbl.dn{color:var(--slate);background:var(--slate-tint);}
+.menu-none{color:var(--text-tertiary);}
+.menu-edit-day{display:flex;gap:10px;padding:10px 0;border-top:1px solid var(--border);}
+.menu-edit-date{flex:0 0 70px;font-weight:800;font-size:13.5px;padding-top:4px;}
+.menu-edit-fields{flex:1;display:flex;flex-direction:column;gap:6px;}
+.menu-edit-fields label{display:flex;flex-direction:column;gap:2px;font-size:12px;color:var(--text-secondary);font-weight:700;}
+.menu-edit-fields textarea{width:100%;box-sizing:border-box;font-size:14px;padding:8px;border:1px solid var(--border);border-radius:10px;font-family:inherit;resize:vertical;}
 .date-card{background:var(--surface);border-radius:18px;padding:14px 16px;margin-bottom:14px;box-shadow:var(--shadow-sm);}
 .date-nav{display:flex;align-items:center;justify-content:space-between;}
 .date-label{font-size:16px;font-weight:800;letter-spacing:-.01em;}
@@ -333,6 +356,7 @@ function withTimeout(promise, ms=10000){
    - recurringPatterns    (공유): { [employeeId]: {mon..sun: boolean} }
    - checkins:YYYY-MM-DD  (공유): { [employeeId]: {status:'eat'|'skip', reason, updatedAt} }
    - guests:YYYY-MM-DD    (공유): [{id,type,count,note,addedBy,addedByEmpId,addedAt}]
+   - menu:YYYY-MM-DD      (공유, 그 주 월요일 날짜): { days: { 'YYYY-MM-DD': { lunch:'메뉴(줄마다 하나)', dinner:'…' } }, updatedAt, updatedBy } — 식단표, 관리자만 올림
    - myProfile            (개인, 이 브라우저에만 저장 — localStorage): {employeeId, name}
    ========================================================================= */
 
@@ -353,6 +377,7 @@ const ICONS = {
   copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>',
   backspace: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6h11v12H9l-6-6 6-6Z"/><path d="M13 10l4 4M17 10l-4 4"/></svg>',
   clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>',
+  menu: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>',
   moon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79Z"/></svg>',
 };
 function icon(name){ return '<span class="icon">' + (ICONS[name]||'') + '</span>'; }
@@ -491,6 +516,10 @@ let state = {
   settlementMonth: currentMonthStr(),
   settlementRows: null,
   settlementLoading: false,
+  menuCache:{},          // { 월요일: {days:{…}} } 식단표
+  menuWeek: null,        // 식단표 탭에서 보는 주(그 주의 아무 날짜)
+  adminMenuWeek: todayStr(),
+  adminMenuDirty: false,
 };
 
 /* ----------------------- 초기화 & 데이터 로드 ----------------------- */
@@ -528,7 +557,29 @@ async function init(){
     document.getElementById('app').innerHTML = '<div class="loading-screen"><p>초기 데이터를 불러오지 못했어요.<br>Supabase 프로젝트 URL/키가 정확한지,<br>lunch_app_data 테이블이 생성되어 있는지 확인해주세요.<br><br><small>('+((e&&e.message)?e.message:String(e))+')</small></p></div>';
   }
 }
+// ── 식단표 (주 단위 · 관리자만 올림) ──
+const weekMonday = d => getWeekDates(d)[0];
+async function loadMenuWeek(date, force){
+  const mon = weekMonday(date);
+  if(force || !(mon in state.menuCache)){ const v = await Store.get('menu:'+mon); state.menuCache[mon] = (v && typeof v === 'object') ? v : { days:{} }; }
+  return state.menuCache[mon];
+}
+function menuOf(date){ const w = state.menuCache[weekMonday(date)]; const d = w && w.days && w.days[date]; return d && (String(d.lunch||'').trim() || String(d.dinner||'').trim()) ? d : null; }
+const menuItems = t => String(t||'').split(/\r?\n|,|·/).map(x=>x.trim()).filter(Boolean);
+function renderMenuCard(date, meal){
+  const d = menuOf(date), isToday = date === todayStr();
+  const dObj = new Date(date+'T00:00:00');
+  const title = (isToday ? '오늘의 메뉴' : `${dObj.getMonth()+1}월 ${dObj.getDate()}일 메뉴`) + (meal==='dinner' ? ' · 석식' : '');
+  const main = d ? menuItems(meal==='dinner' ? d.dinner : d.lunch) : [];
+  const other = d ? menuItems(meal==='dinner' ? d.lunch : d.dinner) : [];
+  return `<div class="card menu-card">
+      <div class="menu-head">${icon('menu')}<b>${title}</b><button class="link-btn small" onclick="openMenuTab('${date}')">식단표 보기 ›</button></div>
+      ${main.length ? `<div class="menu-items">${main.map(i=>`<span class="menu-item">${esc(i)}</span>`).join('')}</div>` : `<p class="muted-text" style="margin:0;">등록된 ${meal==='dinner'?'석식':'중식'} 메뉴가 없어요</p>`}
+      ${other.length ? `<div class="menu-other">${meal==='dinner' ? '중식' : icon('moon')+'석식'} · ${other.map(esc).join(' · ')}</div>` : ''}
+    </div>`;
+}
 async function loadDateData(date){
+  try{ await loadMenuWeek(date); }catch(e){ /* 식단표는 부가 기능 */ }
   if(!(date in state.checkinsCache)){
     const c = await Store.get('checkins:'+date);
     state.checkinsCache[date] = c || {};
@@ -708,6 +759,7 @@ function renderEmployeeShell(){
   let content;
   if(state.employeeTab==='today') content = renderToday();
   else if(state.employeeTab==='dinner') content = renderDinner();
+  else if(state.employeeTab==='menu') content = renderMenuTab();
   else if(state.employeeTab==='recurring') content = renderRecurring();
   else if(state.employeeTab==='guests') content = renderGuestsTab();
   else content = renderMore();
@@ -723,6 +775,7 @@ function renderEmployeeShell(){
     <nav class="bottom-nav">
       <button class="nav-tab ${state.employeeTab==='today'?'active':''}" onclick="switchEmployeeTab('today')">${icon('check')}<span>중식</span></button>
       <button class="nav-tab ${state.employeeTab==='dinner'?'active':''}" onclick="switchEmployeeTab('dinner')">${icon('moon')}<span>석식</span></button>
+      <button class="nav-tab ${state.employeeTab==='menu'?'active':''}" onclick="switchEmployeeTab('menu')">${icon('menu')}<span>식단표</span></button>
       <button class="nav-tab ${state.employeeTab==='recurring'?'active':''}" onclick="switchEmployeeTab('recurring')">${icon('gear')}<span>정기설정</span></button>
       <button class="nav-tab ${state.employeeTab==='guests'?'active':''}" onclick="switchEmployeeTab('guests')">${icon('users')}<span>외부인원</span></button>
       <button class="nav-tab ${state.employeeTab==='more'?'active':''}" onclick="switchEmployeeTab('more')"><span class="avatar-tab-badge">${initial}</span><span>더보기</span></button>
@@ -730,7 +783,41 @@ function renderEmployeeShell(){
 
   </div>`;
 }
-function switchEmployeeTab(tab){ state.employeeTab=tab; render(); }
+function switchEmployeeTab(tab){
+  state.employeeTab=tab;
+  if(tab==='menu'){ if(!state.menuWeek) state.menuWeek = state.selectedDate; render(); loadMenuWeek(state.menuWeek).then(()=>{ if(state.employeeTab==='menu') render(); }).catch(()=>{}); return; }
+  render();
+}
+function openMenuTab(date){ state.menuWeek = date || state.selectedDate; switchEmployeeTab('menu'); }
+async function shiftMenuWeek(n){ state.menuWeek = addDays(state.menuWeek || state.selectedDate, 7*n); try{ await loadMenuWeek(state.menuWeek); }catch(e){} render(); }
+async function pickMenuDay(date){ state.employeeTab='today'; await selectDate(date); }
+// 식단표 탭: 한 주를 한 번에 (월~금, 주말은 메뉴가 있을 때만)
+function renderMenuTab(){
+  const base = state.menuWeek || state.selectedDate, week = getWeekDates(base), mon = week[0];
+  const w = state.menuCache[mon];
+  const f = d => { const o = new Date(d+'T00:00:00'); return (o.getMonth()+1)+'/'+o.getDate(); };
+  const days = week.filter((d,i) => i < 5 || menuOf(d));
+  const any = week.some(d => menuOf(d));
+  const rows = days.map(d => {
+    const m = menuOf(d), o = new Date(d+'T00:00:00'), isT = d === todayStr();
+    const lunch = m ? menuItems(m.lunch) : [], dinner = m ? menuItems(m.dinner) : [];
+    return `<button class="menu-day ${isT?'is-today':''}" onclick="pickMenuDay('${d}')">
+      <div class="menu-day-head"><b>${['일','월','화','수','목','금','토'][o.getDay()]}</b> ${f(d)}${isT?' <span class="menu-today">오늘</span>':''}</div>
+      <div class="menu-day-body">
+        <div class="menu-meal"><span class="menu-meal-lbl">중식</span>${lunch.length ? lunch.map(esc).join(' · ') : '<span class="menu-none">—</span>'}</div>
+        ${dinner.length ? `<div class="menu-meal"><span class="menu-meal-lbl dn">석식</span>${dinner.map(esc).join(' · ')}</div>` : ''}
+      </div></button>`;
+  }).join('');
+  return `
+    <div class="date-card">
+      <div class="date-nav">
+        <button class="icon-btn" onclick="shiftMenuWeek(-1)">‹</button>
+        <span class="date-label">${f(week[0])} ~ ${f(week[6])} 식단표</span>
+        <button class="icon-btn" onclick="shiftMenuWeek(1)">›</button>
+      </div>
+    </div>
+    ${w ? (any ? `<div class="menu-week">${rows}</div><p class="muted-text">날짜를 누르면 그날 중식 체크 화면으로 이동해요.</p>` : '<div class="card"><p class="muted-text" style="margin:0;">이 주에 등록된 식단표가 없어요. 식단표는 관리자가 올려요.</p></div>') : '<div class="card"><p class="muted-text" style="margin:0;">불러오는 중…</p></div>'}`;
+}
 
 /* ----- 오늘 탭 ----- */
 function getDeadlineText(){
@@ -803,6 +890,7 @@ function renderToday(){
       </div>
       <div class="week-strip">${pills}</div>
     </div>
+    ${renderMenuCard(date, 'lunch')}
     ${deadlineHtml}
     <div class="card">
       <div class="status-buttons">
@@ -911,6 +999,7 @@ function renderDinner(){
       </div>
       <div class="week-strip">${pills}</div>
     </div>
+    ${renderMenuCard(date, 'dinner')}
     <div class="card">
       <p class="desc-text">${icon('moon')} 석식은 <b>야근하시는 분만</b> 신청해주세요. 신청 안 하면 자동으로 카운트되지 않아요.</p>
       <div class="status-buttons">
@@ -1333,6 +1422,7 @@ function renderAdminShell(){
   if(state.adminTab==='dashboard') content = renderAdminDashboard();
   else if(state.adminTab==='roster') content = renderAdminRoster();
   else if(state.adminTab==='settlement') content = renderAdminSettlement();
+  else if(state.adminTab==='menu') content = renderAdminMenu();
   else content = renderAdminSettings();
   return `
   <div class="shell">
@@ -1345,16 +1435,66 @@ function renderAdminShell(){
       <button class="nav-tab ${state.adminTab==='dashboard'?'active':''}" onclick="switchAdminTab('dashboard')">${icon('check')}<span>대시보드</span></button>
       <button class="nav-tab ${state.adminTab==='roster'?'active':''}" onclick="switchAdminTab('roster')">${icon('users')}<span>직원관리</span></button>
       <button class="nav-tab ${state.adminTab==='settlement'?'active':''}" onclick="switchAdminTab('settlement')">${icon('download')}<span>정산</span></button>
+      <button class="nav-tab ${state.adminTab==='menu'?'active':''}" onclick="switchAdminTab('menu')">${icon('menu')}<span>식단표</span></button>
       <button class="nav-tab ${state.adminTab==='settings'?'active':''}" onclick="switchAdminTab('settings')">${icon('gear')}<span>설정</span></button>
     </nav>
   </div>`;
 }
 async function switchAdminTab(tab){
+  if(state.adminTab==='menu' && tab!=='menu' && state.adminMenuDirty && !confirm('저장하지 않은 식단표가 있어요. 그래도 나갈까요?')) return;
+  if(tab!=='menu') state.adminMenuDirty = false;
   state.adminTab=tab;
   render();
+  if(tab==='menu'){ try{ await loadMenuWeek(state.adminMenuWeek, true); }catch(e){} render(); }
   if(tab==='settlement' && !state.settlementRows && !state.settlementLoading){
     await loadSettlementMonth(state.settlementMonth);
   }
+}
+// 관리자 식단표: 한 주씩 날짜마다 중식 · 석식 메뉴 (한 줄에 하나) — 업체 식단표 올리는 방식은 정해지면 추가
+function renderAdminMenu(){
+  const week = getWeekDates(state.adminMenuWeek), mon = week[0], w = state.menuCache[mon];
+  const f = d => { const o = new Date(d+'T00:00:00'); return (o.getMonth()+1)+'/'+o.getDate()+'('+['일','월','화','수','목','금','토'][o.getDay()]+')'; };
+  if(!w) return '<div class="card"><p class="muted-text">불러오는 중…</p></div>';
+  const rows = week.map(d => { const m = (w.days||{})[d] || {}; return `<div class="menu-edit-day">
+      <div class="menu-edit-date">${f(d)}${d===todayStr()?' <span class="menu-today">오늘</span>':''}</div>
+      <div class="menu-edit-fields">
+        <label>중식<textarea rows="3" data-menu-date="${d}" data-meal="lunch" placeholder="한 줄에 메뉴 하나" oninput="state.adminMenuDirty=true">${esc(m.lunch||'')}</textarea></label>
+        <label>석식<textarea rows="2" data-menu-date="${d}" data-meal="dinner" placeholder="(선택)" oninput="state.adminMenuDirty=true">${esc(m.dinner||'')}</textarea></label>
+      </div></div>`; }).join('');
+  return `
+    <div class="date-card">
+      <div class="date-nav">
+        <button class="icon-btn" onclick="shiftAdminMenuWeek(-1)">‹</button>
+        <span class="date-label">${f(week[0])} ~ ${f(week[6])}</span>
+        <button class="icon-btn" onclick="shiftAdminMenuWeek(1)">›</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2 class="section-title">${icon('menu')} 식단표 올리기</h2>
+      <p class="desc-text">날짜마다 메뉴를 한 줄에 하나씩 적고 저장하면, 직원 화면의 '오늘의 메뉴'와 '식단표' 탭에 나와요. 비워 두면 그날은 메뉴 없음으로 보여요.</p>
+      ${rows}
+      <div style="display:flex;gap:8px;margin-top:12px;"><button class="btn btn-primary" onclick="saveAdminMenu()">저장</button>${w.updatedAt ? `<span class="muted-text" style="margin:auto 0;">마지막 저장: ${new Date(w.updatedAt).toLocaleString('ko-KR')}</span>` : ''}</div>
+    </div>`;
+}
+async function shiftAdminMenuWeek(n){
+  if(state.adminMenuDirty && !confirm('저장하지 않은 식단표가 있어요. 그래도 다른 주로 갈까요?')) return;
+  state.adminMenuDirty = false;
+  state.adminMenuWeek = addDays(state.adminMenuWeek, 7*n);
+  render(); try{ await loadMenuWeek(state.adminMenuWeek, true); }catch(e){} render();
+}
+async function saveAdminMenu(){
+  const mon = weekMonday(state.adminMenuWeek), days = {};
+  document.querySelectorAll('textarea[data-menu-date]').forEach(t => {
+    const d = t.dataset.menuDate, v = t.value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean).join('\n');
+    if(!v) return;
+    (days[d] = days[d] || {})[t.dataset.meal] = v;
+  });
+  const val = { days, updatedAt: Date.now(), updatedBy: '관리자' };
+  const ok = await Store.set('menu:'+mon, val);
+  if(!ok){ toast('저장하지 못했어요. 인터넷 연결을 확인해주세요', true); return; }
+  state.menuCache[mon] = val; state.adminMenuDirty = false;
+  toast('식단표를 저장했어요');
+  render();
 }
 function exitAdmin(){
   state.adminUnlocked=false;
